@@ -1,0 +1,537 @@
+---
+title: "Ames house prices"
+output: html_document
+---
+
+NAME: Federico Melograna
+
+BADGE: 789256
+
+NICKNAME: f.melograna
+
+TEAM: Pifferai_Magici 
+
+ROUND: 1st
+
+### Summary
+
+My strategy was: 
+
+1) Caricare le Librerie
+2) Imputare i missing value non random con 0
+3) imputare i missing value con la moda
+4) Esplorazione delle variabili
+5) Creazione ed eliminazione di variabili
+6) Modellazione tramite XGB, SVM, Lasso
+7) Media pesata delle tre previsioni
+
+### References:
+
+* https://www.kaggle.com/erikbruin/house-prices-lasso-xgboost-and-a-detailed-eda
+
+* http://topepo.github.io/caret/index.html
+
+### Models
+
+* LM GLM MICE Lasso XGB SVM
+
+### Non-standard R packages
+
+* VIM plyr dplyr XGBoost mice caret xgboost car ggplot2 
+* VIM imputation and visualization of missing values
+* plyr,dplyr strumenti utili per maneggiare dati eg. (%>%)
+* XGBoost, serve per performare un gradient boosting eg. method=xgb
+* mice: serve per fare una imputazione multipla condizionata alle altre variabili
+* caret: Classification and regression, pacchetto che incorpora molteplici modelli al suo interno con una struttura standard
+* car: companion to applied regression, usato per operazioni accessorie e grafiche eg. scatterplot
+* ggplot2: metodo per disegnare grafici più accurati e diversificati eg. ggplot
+* ggrepel: Provides text and label geoms for 'ggplot2, serve per mettere etichette che non si sovrappongano ai dati 
+
+```{r startup, include = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = T, eval=T, message=F, warning=F, error=F, comment=NA, cache=F, R.options=list(width=220))
+```
+
+
+### R code to reproduce the last submission:
+
+```{r}
+# get the required R packages
+library(VIM)
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+library(car)
+# import data
+train <- read.csv("http://bee-fore.s3-eu-west-1.amazonaws.com/datasets/60.csv")
+test <- read.csv("http://bee-fore.s3-eu-west-1.amazonaws.com/datasets/61.csv")
+
+test$SalePrice=NA
+dati2=rbind(train,test);da=dati2
+da$SalePrice=log(da$SalePrice)
+all=dati2              
+all$SalePrice=da$SalePrice
+##
+sp=all$SalePrice
+
+#LOG
+all_nm=all
+dati2=all#dataset non modificato come benchmark
+
+##MISSING IN POOL
+levels(dati2$Pool.QC)
+all$Pool.QC=as.character(all$Pool.QC)
+all$Pool.QC[is.na(all$Pool.QC)] <- 'None'
+Qualities <- c('None' = 0,  'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+all$Pool.QC<-as.integer(revalue(all$Pool.QC, Qualities))
+
+###MISSING IN MISC FEATURE 
+##imputiamo adesso i missing in misc feature
+all$Misc.Feature=as.character(all$Misc.Feature)
+all$Misc.Feature[is.na(all$Misc.Feature)] <- 'None'
+all$Misc.Feature <- as.factor(all$Misc.Feature)
+
+#######################
+#IMPUTARE MISSING IN ALLEY
+
+all$Alley=as.character(all$Alley)
+all$Alley[is.na(all$Alley)] <- 'None'
+all$Alley <- as.factor(all$Alley)
+##MISSING IN FENCE
+all$Fence=as.character(all$Fence)
+all$Fence[is.na(all$Fence)] <- 'None'
+all$Fence <- as.factor(all$Fence)
+##MISSING IN FIREPLACE
+Qualities <- c('None' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+all$Fireplace.Qu=as.character(all$Fireplace.Qu)
+all$Fireplace.Qu[is.na(all$Fireplace.Qu)] <- 'None'
+all$Fireplace.Qu<-as.integer(revalue(all$Fireplace.Qu, Qualities))
+all$Fireplace.Qu=as.factor(all$Fireplace.Qu)
+###MISSING IN LOT.FRONTAGE
+###Lot.Frontage
+for (i in 1:nrow(all)){
+  if(is.na(all$Lot.Frontage[i])){
+    all$Lot.Frontage[i] <- as.integer(median(all$Lot.Frontage[all$Neighborhood==all$Neighborhood[i]], na.rm=TRUE)) 
+  }
+}
+########MISSING IN LOT.SHAPE
+all$Lot.Shape<-as.integer(revalue(all$Lot.Shape, c('IR3'=0, 'IR2'=1, 'IR1'=2, 'Reg'=3)))
+###MISSING GARAGE
+##adesso garage
+##per rimpiazzare anno mancante garage, modello con anno casa
+
+mod_g=lm(all$Garage.Yr.Blt~all$Year.Built)
+plot(all$Garage.Yr.Blt~all$Year.Built)
+abline(mod_g)
+garagey=all$Garage.Yr.Blt
+yeay=all$Year.Built[is.na(all$Garage.Yr.Blt)]
+garagey[is.na(garagey)]=round(mod_g$coefficients[1]+mod_g$coefficients[2]*yeay)
+###adesso rimettiamo dentro
+all$Garage.Yr.Blt=garagey
+####
+all$Garage.Type=as.character(all$Garage.Type)
+all$Garage.Type[all$Garage.Area==0]="none"
+all$Garage.Type=as.factor(all$Garage.Type)
+##risolto su garage type
+all$Garage.Finish=as.character(all$Garage.Finish)
+all$Garage.Finish[all$Garage.Area==0]="none"
+all$Garage.Finish=as.factor(all$Garage.Finish)
+temp=all[all$Garage.Cars==1,]
+##la moda è unf
+all$Garage.Finish[2128]="Unf"
+##imputato il primo, nel secondo i2561
+temp2=all[all$Garage.Type=="Detchd",]
+all$Garage.Finish[2561]="Unf"
+all$Garage.Cars[2561]=2
+all$Garage.Area[2561]=420
+all$Garage.Qual[2561]="TA"
+all$Garage.Cond[2561]="TA"
+#QUAL
+all$Garage.Qual=as.character(all$Garage.Qual)
+all$Garage.Qual[all$Garage.Area==0]="none"
+all$Garage.Qual=as.factor(all$Garage.Qual)
+all$Garage.Qual[2128]="TA"
+
+###GARAGE:COND
+all$Garage.Cond=as.character(all$Garage.Cond)
+all$Garage.Cond[all$Garage.Area==0]="none"
+all$Garage.Cond=as.factor(all$Garage.Cond)
+all$Garage.Cond[2128]="TA"
+######
+
+###garage finito
+
+all$Garage.Yr.Blt[all$Garage.Yr.Blt>2018]=2007
+
+###
+#BASEMENT VARIABLES
+####
+
+all$Bsmt.Cond=as.character(all$Bsmt.Cond)
+
+all$Bsmt.Cond[all$Bsmt.Full.Bath==0 & is.na(all$Bsmt.Cond)]="none"
+
+all$Bsmt.Cond=as.factor(all$Bsmt.Cond)
+
+####Exposure
+all$Bsmt.Full.Bath[is.na(all$Bsmt.Exposure)]
+table(all$Bsmt.Exposure)
+all$Bsmt.Exposure=as.character(all$Bsmt.Exposure)
+str(all$Bsmt.Full.Bath)
+all$Bsmt.Exposure[all$Bsmt.Full.Bath==0 & is.na(all$Bsmt.Exposure)]="none"
+table(all$Bsmt.Exposure)
+all$Bsmt.Exposure=as.factor(all$Bsmt.Exposure)
+
+###BSmt.Qual
+
+all$Bsmt.Full.Bath[is.na(all$Bsmt.Qual)]
+all$Bsmt.Qual=as.character(all$Bsmt.Qual)
+all$Bsmt.Qual[all$Bsmt.Full.Bath==0 & is.na(all$Bsmt.Qual)]="none"
+all$Bsmt.Qual=as.factor(all$Bsmt.Qual)
+
+#####SbmtFintype1
+
+all$BsmtFin.Type.1=as.character(all$BsmtFin.Type.1)
+all$BsmtFin.Type.1[all$Bsmt.Full.Bath==0 & is.na(all$BsmtFin.Type.1)]="none"
+all$BsmtFin.Type.1=as.factor(all$BsmtFin.Type.1)
+#######
+all$BsmtFin.Type.2=as.character(all$BsmtFin.Type.2)
+all$BsmtFin.Type.2[all$Bsmt.Full.Bath==0 & is.na(all$BsmtFin.Type.2)]="none"
+all$BsmtFin.Type.2=as.factor(all$BsmtFin.Type.2)
+all$Bsmt.Qual[769]="none"
+all$Bsmt.Cond[769]="none"
+all$Bsmt.Exposure[769]="none"
+all$BsmtFin.Type.1[769]="none"
+all$BsmtFin.Type.2[769]="none"
+all$Bsmt.Full.Bath[769]=0
+all$Bsmt.Half.Bath[769]=0
+###########
+
+##missing in full.bath
+#2119
+all$Bsmt.Qual[2119]="none"
+all$Bsmt.Cond[2119]="none"
+all$Bsmt.Exposure[2119]="none"
+all$BsmtFin.Type.1[2119]="none"
+all$BsmtFin.Type.2[2119]="none"
+all$BsmtFin.SF.1[2119]=0
+all$BsmtFin.SF.2[2119]=0
+all$Bsmt.Unf.SF[2119]=0
+all$Bsmt.Full.Bath[2119]=0
+all$Bsmt.Half.Bath[2119]=0
+###imputo a tutti 0 o minimo
+all$Total.Bsmt.SF[2119]=0
+#
+
+#Bmst.Exposure
+ #28,917,2861
+table(all$Bsmt.Exposure) ###gli imputo come NO
+all$Bsmt.Exposure[c(28,917,2861)]="No"
+####adesso BSmtfintype 2
+ #223
+temp3=all[all$Bsmt.Unf.SF>1000,]
+##ha senso codificarlo come Unf
+all$BsmtFin.Type.2[223]="Unf"
+#################
+###Masonry variables
+all$Mas.Vnr.Type[is.na(all$Mas.Vnr.Area)]="None"
+all$Mas.Vnr.Area[is.na(all$Mas.Vnr.Area)]=0
+##mice
+library(mice)
+data=all[,c(5,6,7,9,10,12)]
+tempData <- mice(data,m=5,maxit=50,meth='pmm',seed=500)
+completedData <- complete(tempData,1)
+all$Lot.Frontage=completedData$Lot.Frontage
+sum(is.na(all[,-82]))
+####missing finiti!!!!!
+
+####feature selection
+allsenzamissing=all
+#creo una copia senza missing
+dati=all;all=all%>%select(-c("Order","PID"))
+#####################
+####FEATURE ENGINEEERING
+###########
+all$MS.SubClass=as.factor(all$MS.SubClass)
+sp=all$SalePrice
+#all%>%select(-"Utilities")  ####lo fa dopo
+###UTILITIES DA TOGLIERE 
+all$NeighRich[all$Neighborhood %in% c('StoneBr',"NridgHt", 'GrnHill', 'NoRidge')] <- 4
+all$NeighRich[all$Neighborhood %in% c("Veenker", "Timber", "Somerst")] <- 3
+all$NeighRich[all$Neighborhood %in% c("OldTown","Blueste" ,"Edwards","BrkSIde","Sawyer","SWISU"
+                                      ,"NAmes","NPkVill","Mitchel")] <- 1
+all$NeighRich[!all$Neighborhood %in% c("OldTown","Blueste" ,"Edwards","BrkSIde","Sawyer","SWISU","NAmes",
+                                       "NPkVill","Mitchel",'MeadowV', 'IDOTRR', 'BrDale','StoneBr',"NridgHt", 'GrnHill', 'NoRidge'
+                                       ,"Veenker", "Timber", "Somerst")] <- 2
+
+all$NeighRich[all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+
+yy=(all$Year.Built+all$Year.Remod.Add)/2
+###tenere solo y remod e una factor se è stata rimodernata
+all$ristrutt=ifelse(all$Year.Built==all$Year.Remod.Add,0,1)
+# all%>%select(-"Year.Built") ###lo fa dopo
+#all%>%select(-"Roof.Style")
+## all%>%select(-"Roof.Matl") lo fa dopo
+
+ext2=ifelse(all$Exterior.1st=="VinylSd"| all$Exterior.1st=="CemntBd"|all$Exterior.1st=="ImStucc","VynilSd",ifelse(
+  all$Exterior.1st=="CBlock"|all$Exterior.1st=="AsbShng","Secondo_mat","Other"))
+
+all$ext1new=as.factor(ext2)
+# all%>%select(-c("Exterior.1st","Exterior.2nd")) ##togliamo i due exterior
+#dopo
+Masonry <- c('None'=0, 'BrkCmn'=0, 'BrkFace'=1, 'Stone'=2, "CBlock"=1)
+all$Mas.Vnr.Type<-as.integer(as.character(revalue(all$Mas.Vnr.Type, Masonry)))
+###all%>%select(-"Mas.Vnr.Area") #togliamo dopo
+Qualities <- c('None' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+all$Exter.Qual=as.integer(as.character(revalue(all$Exter.Qual,Qualities)))
+
+######################################7
+all$FondRich[all$Foundation %in% c('Pconc',"Wood")] <- 1
+all$FondRich[!all$Foundation %in% c('Pconc',"Wood")] <- 0
+# all%>%select(-"Foundation") la tolgo e la rimetto,buffa la vita
+#########
+Qualities <- c('none' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+all$Bsmt.Qual=as.integer(as.character(revalue(all$Bsmt.Qual,Qualities)))
+#all%>%select(-Bsmt.Cond) #la tolgo dopo
+Qualities <- c('none' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+all$Heating.QC<-as.integer(as.character(revalue(all$Heating.QC, Qualities)))
+###
+Quality= c('No' = 0,"none"=0, 'Mn' = 1, 'Av' = 2, 'Gd' = 3 )
+temp=as.character(revalue((all$Bsmt.Exposure),Quality))
+temp=as.integer(temp)
+all$Bsmt.Exposure=temp
+######
+finit=ifelse(all$Bsmt.Unf.SF!=0,"Unf","Fin")
+inv=all[all$BsmtFin.SF.1<all$BsmtFin.SF.2,]
+#all%>%select(-"BsmtFin.SF.1","BsmtFin.SF.2","BsmtFin.Type.2","Bsmt.Unf.SF")###
+all$BsmtFin.Type.1[all$BsmtFin.SF.1<all$BsmtFin.SF.2]<-all$BsmtFin.Type.2[all$BsmtFin.SF.1<all$BsmtFin.SF.2]
+
+all$Tipo_Bas[all$BsmtFin.Type.1 %in% c('GLQ')] <- 2
+all$Tipo_Bas[all$BsmtFin.Type.1 %in% c('none')] <- 0
+all$Tipo_Bas[!all$BsmtFin.Type.1 %in% c('GLQ',"none")] <- 1
+#all%>$select(-c("BsmtFin.Type.1"))
+# all%>%select(-"Heating") #la togliamo dopo
+
+########
+all$Electrical[all$Electrical==""]="SBrkr"
+Qualities <- c('FuseP' = 0, 'FuseF' = 0, 'FuseA' = 0, 'Mix' = 1, 'SBrkr' = 1)
+temp=revalue(as.character(all$Electrical),Qualities)
+temp=as.integer(temp)
+all$Electrical=temp
+##############
+all$Total.Area=all$X1st.Flr.SF+all$X2nd.Flr.SF+all$Total.Bsmt.SF
+#togliamo dopo
+#all%>%select(-c("X1st.Flt.SF","X2nd.Flr.SF","Total.Bsmt.SF","Gr.Liv.Area"))
+#all%>%select(-"Low.Qual.Fin.SF")
+#bagni nel basameno
+#anche mettendoli assieme non cosi infomrativi
+####per i bagni creo la somma di tutti i bagni, che siano nel base o no
+###tra tutte tengo solo bagni totali
+all$Tot.Bagn=0.5*all$Half.Bath+all$Full.Bath+all$Bsmt.Full.Bath+0.5*all$Bsmt.Half.Bath
+#tolgo dopo
+#all%>%select(-c("Half.Bath","Full.Bath","Bsmt.Full.Bath","Bsmt.Half.Bath"))
+#tolgo dopo
+#all%>%select(-c("Beedroom.AbvGr","Kitchen.AbvGr"))
+
+Qualities <- c('none' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+all$Kitchen.Qual=as.integer(revalue(as.character(all$Kitchen.Qual),Qualities))
+
+all$Functional[all$Functional=="Sal"]
+##riimputiamolo con sole tre classii --> Typuical, Buona, e sal
+all$Funzionalita[all$Functional%in% c('Typ')] <- 2
+all$Funzionalita[all$Functional%in% c('Sal')] <- 0
+all$Funzionalita[!all$Functional%in% c('Typ',"Sal")] <- 1
+#dopo lo togliamo
+#all%>%select(-c("Functional"))
+##lasciamo tutto cosi, trasf solo fireplace qu in integer
+all$Fireplace.Qu=as.integer(as.character((all$Fireplace.Qu)))
+###tipo garage adessso
+all$Garage.Yr.Blt[all$Garage.Yr.Blt==2207]=2007
+#binning
+all$Garage_Tipo[all$Garage.Type%in% c('none',"CarPort")] <- 0
+all$Garage_Tipo[all$Garage.Type%in% c('Attchd')] <- 2
+all$Garage_Tipo[all$Garage.Type%in% c('BuiltIn')] <- 3
+all$Garage_Tipo[!all$Garage.Type%in% c('none',"CarPort",'Attchd','BuiltIn')] <- 1
+all$Garage_Tipo=as.factor(all$Garage_Tipo)
+##all%>%select(-c("Garage.Type"))
+##riarrangio garage type in categorie: 4 none e carport, detched fino a bsmt e attched Builtin
+##le lascio categoriali pero 
+
+##finish in numerico
+Qualities <- c('none' = 0, 'Unf' = 1, "RFn" = 2, 'Fin' = 3)
+all$Garage.Finish=as.factor(as.integer(revalue(as.character(all$Garage.Finish),Qualities)))
+###tengo cars
+#all<-all%>%select(-c("Garage.Qual","Garage.Cond","Garage.Area"))
+#all<-all%>%select(-c("Wood.Deck.SF"))
+####veranda prendere somma di tutti i posti 
+veranda=all$Open.Porch.SF+all$Enclosed.Porch+all$X3Ssn.Porch+all$Screen.Porch
+ver=ifelse(veranda>0,1,0)
+all$Veranda=ver #si no
+all$lung.Ver=veranda 
+#all<-all%>%select(-c("Open.Porch.SF","Enclosed.Porch","X3Ssn.Porch","Screen.Porch"))
+
+test$Pool.Area[!is.na(test$Pool.QC)]
+#all<-all%>%select(-c("Pool.QC","Pool.Area"))
+#all<-all%>%select(-c("Misc.Val","Misc.Feature"))
+#sotto
+all$Mo.Sold=as.factor(all$Mo.Sold)
+all$Yr.Sold=as.factor(all$Yr.Sold)
+#
+all$Vendita_Tipo[all$Sale.Type%in% c("WD ","CWD","Con","ConLI","VWD")] <- "Normale"
+all$Vendita_Tipo[all$Sale.Type%in% c('New')] <- "Alta"
+all$Vendita_Tipo[!all$Sale.Type%in% c("WD ","CWD","Con","ConLI","VWD","New")] <- "Bassa"
+all$Vendita_Tipo=as.factor(all$Vendita_Tipo)
+
+all<-all%>%select(-c("Sale.Type"))
+##last sale.condition
+
+##binniamo anche qui 
+
+all$Cond.vend[all$Sale.Condition%in% c("Partial")] <- "Ricco"
+
+all$Cond.vend[all$Sale.Condition%in% c('Abnorml',"AdjLand")] <- "Povero"
+all$Cond.vend[!all$Sale.Condition%in% c('Abnorml',"AdjLand","Partial")] <- "Normale"
+all$Cond.vend=as.factor(all$Cond.vend)
+all<-all%>%select(-c("Sale.Condition"))
+set.seed(2018)
+all_or=all 
+all=all%>%select(-"Year.Built") #collineare
+all=all%>%select(-"Roof.Style") ##sembra inutile
+all=all%>%select(-"Roof.Matl") #inutile inutile
+all=all%>%select(-c("Exterior.1st","Exterior.2nd")) #collineari
+all=all%>%select(-"Mas.Vnr.Area") #inutile
+all=all%>%select(-"Foundation") #spoILATA
+all=all%>%select(-"Bsmt.Cond") #inutile
+all<-all%>%select(-c("BsmtFin.SF.2","BsmtFin.Type.2","Bsmt.Unf.SF"))
+all<-all%>%select(-c("BsmtFin.SF.1"))
+
+all<-all%>%select(-"Heating") #inutile
+all<-all%>%select(-c("X1st.Flr.SF","X2nd.Flr.SF","Total.Bsmt.SF","Gr.Liv.Area"))
+all<-all%>%select(-"Low.Qual.Fin.SF") #inutile
+all<-all%>%select(-c("Half.Bath","Full.Bath","Bsmt.Full.Bath","Bsmt.Half.Bath"))
+all=all%>%select(-c("Bedroom.AbvGr","Kitchen.AbvGr")) #inutili
+all=all%>%select(-c("Funzionalita"))
+##meglio garage type di tipo-->#tolgo tipo
+
+all<-all%>%select(-c("Garage_Tipo"))
+all<-all%>%select(-c("Garage.Qual","Garage.Cond","Garage.Area")) #in, in coll
+#
+all<-all%>%select(-c("Wood.Deck.SF")) #inutile
+all<-all%>%select(-c("Open.Porch.SF","Enclosed.Porch","X3Ssn.Porch","Screen.Porch"))
+#inutili
+all<-all%>%select(-c("Pool.QC","Pool.Area")) #inutili
+all<-all%>%select(-c("Misc.Val","Misc.Feature")) #inutili
+all<-all%>%select(-c("Vendita_Tipo"))
+set.seed(2018)
+all=cbind(all,all_or$Foundation)
+#####fine togliere variabili
+
+#############modellistica
+numericVars <- which(sapply(all, is.numeric))
+numericVarNames <- names(numericVars) 
+DFnumeric <- all[, names(all) %in% numericVarNames]
+DFfactors <- all[, !(names(all) %in% numericVarNames)]
+DFfactors <- DFfactors[, names(DFfactors) != 'SalePrice']
+cat('There are', length(DFnumeric), 'numeric variables, and', length(DFfactors), 'factor variables')
+for(i in 1:ncol(DFnumeric)){
+  if (abs(skew(DFnumeric[,i]))>0.8){
+    DFnumeric[,i] <- log(DFnumeric[,i] +1)
+  }
+}
+PreNum <- preProcess(DFnumeric, method=c("center", "scale"))
+print(PreNum)
+DFnorm <- predict(PreNum, DFnumeric)
+dim(DFnorm)
+DFdummies <- as.data.frame(model.matrix(~.-1, DFfactors))
+dim(DFdummies)
+ZerocolTest <- which(colSums(DFdummies[(nrow(all[!is.na(all$SalePrice),])+1):nrow(all),])==0)
+colnames(DFdummies[ZerocolTest])
+DFdummies <- DFdummies[,-ZerocolTest]
+ZerocolTrain <- which(colSums(DFdummies[1:nrow(all[!is.na(all$SalePrice),]),])==0)
+colnames(DFdummies[ZerocolTrain])
+DFdummies <- DFdummies[,-ZerocolTrain]
+fewOnes <- which(colSums(DFdummies[1:nrow(all[!is.na(all$SalePrice),]),])<10)
+colnames(DFdummies[fewOnes])
+DFdummies <- DFdummies[,-fewOnes] #removing predictors
+dim(DFdummies)
+combined <- cbind(DFnorm, DFdummies) 
+train1 <- combined[!is.na(all$SalePrice),]
+train1<-train1%>%select(-"SalePrice")
+test1 <- combined[is.na(all$SalePrice),]
+test1<-test1%>%select(-"SalePrice")
+set.seed(27042018)
+my_control <-trainControl(method="cv", number=5)
+lassoGrid <- expand.grid(alpha = 1, lambda = seq(0.001,0.1,by = 0.0005))
+lasso_mod <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method='glmnet', trControl= my_control, tuneGrid=lassoGrid) 
+lasso_mod$bestTune
+#alpha lambda
+#21     1  0.035
+LassoPred <- predict(lasso_mod, test1)
+predictions_lasso <- exp(LassoPred) #need to reverse the log to the real values
+#gradient boosting
+xgb_grid = expand.grid(
+  nrounds = 1000,
+  eta = c(0.1, 0.05, 0.01),
+  max_depth = c(2, 3, 4, 5, 6),
+  gamma = 0,
+  colsample_bytree=1,
+  min_child_weight=c(1, 2, 3, 4 ,5),
+  subsample=1
+)
+#  nrounds max_depth  eta gamma colsample_bytree min_child_weight subsample
+#6    1000         3 0.01     0                1                1         1
+label_train <- all$SalePrice[!is.na(all$SalePrice)]
+# put our testing & training data into two seperates Dmatrixs objects
+dtrain <- xgb.DMatrix(data = as.matrix(train1), label= label_train)
+dtest <- xgb.DMatrix(data = as.matrix(test1))
+default_param<-list(
+  objective = "reg:linear",
+  booster = "gbtree",
+  eta=0.01, #default = 0.3
+  gamma=0,
+  max_depth=3, #default=6
+  min_child_weight=1, #default=1
+  subsample=1,
+  colsample_bytree=1)
+
+set.seed(123)
+xgbcv <- xgb.cv( params = default_param, data = dtrain, nrounds = 2500, nfold = 5, showsd = T, stratified = T, print_every_n = 40, early_stopping_rounds = 10, maximize = F)
+set.seed(123)
+xgb_mod <- xgb.train(data = dtrain, params=default_param, nrounds = 1283)
+XGBpred <- predict(xgb_mod, dtest)
+predictions_XGB <- exp(XGBpred) #need to reverse the log to the real values
+
+###proviamo SVM
+grid <- expand.grid(C = c(0.01, 0.05))
+set.seed(3233)
+svm_Linear_Grid <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method = "svmLinear",
+                         trControl=my_control,
+                         tuneGrid = grid,
+                         tuneLength = 10)
+
+svm_Linear_Grid$bestTune
+#C=0.01
+
+set.seed(123)
+SVMpred <- predict(svm_Linear_Grid, test1)
+predictions_svm <- exp(SVMpred)
+##prev medie 
+prevmedie=0.65*predictions_XGB+0.30*predictions_svm+0.05*predictions_lasso
+head(prevmedie,30)
+
+ 
+#write.table(prevmedie,file = "previsionimediealternativo.txt" ,row.names = FALSE, col.names = FALSE)
+head(prevmedie)
+```
+
+
+
